@@ -14,15 +14,43 @@ const char* hunktype[HUNK_ABSRELOC16 - HUNK_UNIT + 1] = {
 
 #define HUNKF_MASK (HUNKF_FAST | HUNKF_CHIP)
 #define NUM_RELOC_CONTEXTS 256
+#define HUNK_DEBUG_LINE 0x4C494E45
+
+
+typedef struct SymbolInfo
+{
+	const char* name;
+	uint32_t address;
+} SymbolInfo;
+
+typedef struct LineInfo
+{
+	const char* filename;
+	int count;
+	uint32_t baseOffset;
+	uint32_t* addresses;
+	int* lines;
+	struct LineInfo* next;
+} LineInfo;
 
 typedef struct HunkInfo
 {
-    unsigned type;        // HUNK_<type>
-    unsigned flags;       // HUNKF_<flag>
+    uint32_t type;        // HUNK_<type>
+    uint32_t flags;       // HUNKF_<flag>
+
     int memsize, datasize; // longwords
     int datastart;        // longword index in file
+
     int relocstart;       // longword index in file
     int relocentries;     // no. of entries
+
+    int symbolCount;
+    int debugLineCount;
+
+    SymbolInfo* symbols;
+    LineInfo* debugLines;
+    LineInfo* lastDebugInfo;
+
 } HunkInfo;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -119,6 +147,110 @@ void* loadToMemory(const char* filename, size_t* size)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void* alloc_zero(size_t size)
+{
+	void* t = malloc(size);
+	memset(t, 0, size); 
+	return t;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define xalloc_zero(type, count) (type*)alloc_zero(sizeof(type) * count);
+#define xalloc(type, count) (type*)malloc(sizeof(type) * count);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static void parseSymbols(HunkInfo* hunk, const void* data, int* currIndex)
+{
+	int oldIndex, index, i = 0;
+	int symCount = 0;
+
+	index = oldIndex = *currIndex;
+
+	// count symbols
+
+	int symlen = get_u32_inc(data, &index) * 4;
+
+	while (symlen > 0)
+	{
+		symCount++;
+		index += symlen + 4;
+		symlen = get_u32_inc(data, &index) * 4;
+	}
+
+	hunk->symbolCount = symCount;
+	hunk->symbols = xalloc(SymbolInfo, symCount);
+
+	index = oldIndex;
+
+	symlen = get_u32_inc(data, &index) * 4;
+
+	while (symlen > 0)
+	{
+		SymbolInfo* info = &hunk->symbols[i++];
+		info->name = ((const char*)data) + index;
+		index += symlen;
+		info->address = get_u32_inc(data, &index) * 4;
+		symlen = get_u32_inc(data, &index) * 4;
+	}
+
+	// symbols for hunk
+	
+	*currIndex = index;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static void parseDebug(HunkInfo* hunk, const void* data, int* currIndex)
+{
+	int index = *currIndex;
+
+	const uint32_t hunkLength = get_u32_inc(data, &index) * 4;
+	const uint32_t baseOffset = get_u32_inc(data, &index) * 4;
+	const uint32_t debugId = get_u32_inc(data, &index);
+
+	if (debugId != HUNK_DEBUG_LINE)
+	{
+		*currIndex += hunkLength;
+		return;
+	}
+
+	LineInfo* lineInfo = xalloc_zero(LineInfo, 1);
+
+	const uint32_t stringLength = get_u32_inc(data, &index) * 4;
+
+	lineInfo->baseOffset = baseOffset;
+	lineInfo->filename = ((const char*)data) + index;
+
+	index += stringLength;
+
+	// M = ((N - 3) - number_of_string_longwords) / 2
+
+	const int lineCount = ((hunkLength - (3 * 4)) - stringLength) / 8;
+
+	lineInfo->addresses = xalloc(uint32_t, lineCount); 
+	lineInfo->lines = xalloc(int, lineCount); 
+
+	for (int i = 0; i < lineCount; ++i)
+	{
+		lineInfo->lines[i] = (int)get_u32_inc(data, &index); 
+		lineInfo->addresses[i] = (uint32_t)get_u32_inc(data, &index); 
+	}
+
+	if (!hunk->debugLines)
+		hunk->debugLines = lineInfo;
+
+	if (hunk->lastDebugInfo)
+		hunk->lastDebugInfo->next = lineInfo;
+
+	hunk->lastDebugInfo = lineInfo;
+
+	*currIndex += hunkLength + 4;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 int aph_parse_file(const char* filename)
 {
     size_t size = 0;
@@ -188,7 +320,6 @@ int aph_parse_file(const char* filename)
     for (int h = 0, nh = 0; h < numhunks;)
     {
         unsigned flags = hunks[h].flags, type;
-        int hunk_length, symlen, n_symbols;
         int lh = h;
         printf("%4d  %s ", h, flags == HUNKF_CHIP ? "CHIP" : flags == HUNKF_FAST ? "FAST" : "ANY ");
         int missing_relocs = 0;
@@ -221,27 +352,19 @@ int aph_parse_file(const char* filename)
             {
                 case HUNK_UNIT:
                 case HUNK_NAME:
-                case HUNK_DEBUG:
+                case HUNK_DEBUG: parseDebug(&hunks[h], data, &index); break;
+                	/*
 				{
-                    printf("           %s (skipped)\n", hunktype[type - HUNK_UNIT]);
+
+
+                    printf("           %s (skipped) (%d)\n", hunktype[type - HUNK_UNIT], index);
                     hunk_length = get_u32_inc(data, &index) * 4;
                     index += hunk_length;
                     break;
 				}
+				*/
 
-                case HUNK_SYMBOL:
-				{
-                    n_symbols = 0;
-                    symlen = get_u32_inc(data, &index) * 4;
-                    while (symlen > 0)
-                    {
-                        n_symbols++;
-                        index += symlen + 4;
-                        symlen = get_u32_inc(data, &index) * 4;
-                    }
-                    printf("           SYMBOL (%d entries)\n", n_symbols);
-                    break;
-				}
+                case HUNK_SYMBOL: parseSymbols(&hunks[h], data, &index); break;
                 case HUNK_CODE:
                 case HUNK_DATA:
                 case HUNK_BSS:
@@ -333,18 +456,12 @@ int aph_parse_file(const char* filename)
                 case HUNK_DREL32:
                 case HUNK_RELOC32SHORT:
 				{
-        			//printf("%4d  %s ", h, flags == HUNKF_CHIP ? "CHIP" : flags == HUNKF_FAST ? "FAST" : "ANY ");
-                    //printf("%4s%10x %10x", hunktype[type - HUNK_UNIT], 0, 0);
-
-					//printf("start %d\n", index);
                     hunks[h].relocstart = index;
                     {
                         int n, tot = 0;
                         while ((n = get_u16_inc(data, &index)) != 0)
                         {
-                        	//printf("n 0x%04x\n", n);
                             uint16_t t = get_u16_inc(data, &index);
-                            //printf(" hunk_id %d\n", t);
                             if (n < 0 || index + n + 2 >= size || t >= numhunks)
                             {
                                 printf("\nError in reloc table!, %d - %d, %d - %d \n", index + n + 2, (int)size, t, numhunks);
@@ -354,8 +471,6 @@ int aph_parse_file(const char* filename)
                             while (n--)
                             {
                                 uint16_t t = get_u16_inc(data, &index);
-
-                        		//printf("  t 0x%04x\n", t);
 
                                 if (t > hunks[h].memsize - 4)
                                 {
