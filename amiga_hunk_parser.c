@@ -379,16 +379,19 @@ static int parseHunk(HunkInfo* hunk, const void* data, int hunkId, int size, int
 
 		switch (type)
 		{
-			case HUNK_UNIT:
-			case HUNK_NAME:
 			case HUNK_DEBUG: parseDebug(hunk, data, &index); break;
 			case HUNK_SYMBOL: parseSymbols(hunk, data, &index); break;
+
 			case HUNK_CODE:
 			case HUNK_DATA:
 			case HUNK_BSS: parseCodeDataBss(hunk, type, data, &index); break;
 			case HUNK_RELOC32: parseReloc32(hunk, data, &index); break;
+
 			case HUNK_DREL32:
 			case HUNK_RELOC32SHORT: parseDreloc32(hunk, data, &index); break;
+
+			case HUNK_UNIT:
+			case HUNK_NAME:
 			case HUNK_RELOC16:
 			case HUNK_RELOC8:
 			case HUNK_EXT:
@@ -402,7 +405,7 @@ static int parseHunk(HunkInfo* hunk, const void* data, int hunkId, int size, int
 			case HUNK_RELRELOC32:
 			case HUNK_ABSRELOC16:
 			{
-				printf("%s (unsupported)\n", hunktype[type - HUNK_UNIT]);
+				printf("%s (unsupported) at %d\n", hunktype[type - HUNK_UNIT], index);
 				return 0;
 			}
 
