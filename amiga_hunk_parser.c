@@ -251,6 +251,71 @@ static void parseDebug(HunkInfo* hunk, const void* data, int* currIndex)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+static void parseCodeDataBss(HunkInfo* hunk, int type, const void* data, int* currIndex)
+{
+	int index = *currIndex;
+
+	hunk->type = type;
+	hunk->datasize = get_u32_inc(data, &index) * 4;
+
+	printf("%4s%10x %10x", hunktype[type - HUNK_UNIT], hunk->memsize, hunk->datasize);
+
+	if (type != HUNK_BSS)
+	{
+		hunk->datastart = index;
+		index += hunk->datasize;
+
+		if (hunk->datasize > 0)
+		{
+			int sum = 0;
+
+			for (int pos = hunk->datastart; pos < hunk->datastart + hunk->datasize; pos += 4)
+				sum += get_u32(data, pos);
+
+			printf("  %08x", sum);
+		}
+		else
+		{
+			printf("          ");
+		}
+	}
+
+	*currIndex = index;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static void parseReloc32(HunkInfo* hunk, const void* data, int* currIndex)
+{
+	int index = *currIndex;
+
+	hunk->relocstart = index;
+	int n, tot = 0;
+
+	while ((n = get_u32_inc(data, &index)) != 0)
+	{
+		uint32_t t = get_u32_inc(data, &index);
+		(void)t;
+
+		tot += n;
+
+		while (n--)
+		{
+			if ((get_u32_inc(data, &index)) > hunk->memsize - 4)
+			{
+				printf("\nError in reloc table!\n");
+				exit(1);
+			}
+		}
+	}
+
+    hunk->relocentries = tot;
+
+	*currIndex = index;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 int aph_parse_file(const char* filename)
 {
     size_t size = 0;
@@ -317,7 +382,7 @@ int aph_parse_file(const char* filename)
 
     // Parse hunks
     printf("Hunk  Mem  Type  Mem size  Data size  Data sum  Relocs\n");
-    for (int h = 0, nh = 0; h < numhunks;)
+    for (int h = 0; h < numhunks;)
     {
         unsigned flags = hunks[h].flags, type;
         int lh = h;
@@ -341,77 +406,18 @@ int aph_parse_file(const char* filename)
                 return 1;
             }
 
-            if (missing_relocs && type != HUNK_RELOC32 && type != HUNK_DREL32)
-            {
-                printf("        %s\n", note);
-                note = "";
-                missing_relocs = 0;
-            }
-
             switch (type)
             {
                 case HUNK_UNIT:
                 case HUNK_NAME:
                 case HUNK_DEBUG: parseDebug(&hunks[h], data, &index); break;
-                	/*
-				{
-
-
-                    printf("           %s (skipped) (%d)\n", hunktype[type - HUNK_UNIT], index);
-                    hunk_length = get_u32_inc(data, &index) * 4;
-                    index += hunk_length;
-                    break;
-				}
-				*/
-
                 case HUNK_SYMBOL: parseSymbols(&hunks[h], data, &index); break;
                 case HUNK_CODE:
                 case HUNK_DATA:
-                case HUNK_BSS:
-				{
-                    if (nh > h)
-                    {
-                        h = nh;
-                        index -= 4;
-                        break;
-                    }
+                case HUNK_BSS: parseCodeDataBss(&hunks[h], type, data, &index); break;
+                case HUNK_RELOC32: parseReloc32(&hunks[h], data, &index); break;
 
-                    hunks[h].type = type;
-                    hunks[h].datasize = get_u32_inc(data, &index) * 4;
-
-                    printf("%4s%10x %10x", hunktype[type - HUNK_UNIT], hunks[h].memsize, hunks[h].datasize);
-
-                    if (type != HUNK_BSS)
-                    {
-                        hunks[h].datastart = index;
-                        index += hunks[h].datasize;
-
-                        if (hunks[h].datasize > 0)
-                        {
-                            int sum = 0;
-                            for (int pos = hunks[h].datastart; pos < hunks[h].datastart + hunks[h].datasize; pos++)
-                            {
-                                sum += get_u32(data, pos);
-                            }
-
-                            printf("  %08x", sum);
-                        }
-                        else
-                        {
-                            printf("          ");
-                        }
-                    }
-                    if (hunks[h].datasize > hunks[h].memsize)
-                    {
-                        note = "  Hunk size overflow corrected!";
-                        hunks[h].memsize = hunks[h].datasize;
-                    }
-                    nh = h + 1;
-                    missing_relocs = 1;
-                    break;
-				}
-
-                case HUNK_RELOC32:
+				#if 0
 				{
                     hunks[h].relocstart = index;
                     {
@@ -442,6 +448,7 @@ int aph_parse_file(const char* filename)
                     }
                     break;
 				}
+				#endif
                 case HUNK_END:
 				{
                     if (hunks[h].type == 0)
@@ -449,7 +456,7 @@ int aph_parse_file(const char* filename)
                         printf("Empty%9d\n", hunks[h].memsize);
                         return 1;
                     }
-                    h = h + 1; nh = h;
+                    h = h + 1; //nh = h;
                     break;
 				}
 
