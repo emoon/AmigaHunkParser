@@ -27,7 +27,7 @@ typedef struct HunkInfo
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inline uint16_t swap_uint16(uint16_t val)
+static inline uint16_t swap_uint16(uint16_t val)
 {
     return (val << 8) | (val >> 8);
 }
@@ -61,6 +61,18 @@ uint32_t get_u32_inc (const void* t, int* index)
     *index += 4;
 #if defined(AHP_LITTLE_ENDIAN)
     return swap_uint32(*mem);
+#endif
+    return *mem;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint16_t get_u16_inc (const void* t, int* index)
+{
+    uint16_t* mem = (uint16_t*)(((uint8_t*)t) + *index);
+    *index += 2;
+#if defined(AHP_LITTLE_ENDIAN)
+    return swap_uint16(*mem);
 #endif
     return *mem;
 }
@@ -104,7 +116,6 @@ void* loadToMemory(const char* filename, size_t* size)
 
     return data;
 }
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -199,7 +210,7 @@ int aph_parse_file(const char* filename)
                 return 1;
             }
 
-            if (missing_relocs && type != HUNK_RELOC32)
+            if (missing_relocs && type != HUNK_RELOC32 && type != HUNK_DREL32)
             {
                 printf("        %s\n", note);
                 note = "";
@@ -319,18 +330,64 @@ int aph_parse_file(const char* filename)
                     break;
 				}
 
+                case HUNK_DREL32:
+                case HUNK_RELOC32SHORT:
+				{
+        			//printf("%4d  %s ", h, flags == HUNKF_CHIP ? "CHIP" : flags == HUNKF_FAST ? "FAST" : "ANY ");
+                    //printf("%4s%10x %10x", hunktype[type - HUNK_UNIT], 0, 0);
+
+					//printf("start %d\n", index);
+                    hunks[h].relocstart = index;
+                    {
+                        int n, tot = 0;
+                        while ((n = get_u16_inc(data, &index)) != 0)
+                        {
+                        	//printf("n 0x%04x\n", n);
+                            uint16_t t = get_u16_inc(data, &index);
+                            //printf(" hunk_id %d\n", t);
+                            if (n < 0 || index + n + 2 >= size || t >= numhunks)
+                            {
+                                printf("\nError in reloc table!, %d - %d, %d - %d \n", index + n + 2, (int)size, t, numhunks);
+                                return 1;
+                            }
+                            tot += n;
+                            while (n--)
+                            {
+                                uint16_t t = get_u16_inc(data, &index);
+
+                        		//printf("  t 0x%04x\n", t);
+
+                                if (t > hunks[h].memsize - 4)
+                                {
+                                    printf("\nError in reloc table!\n");
+                                    return 1;
+                                }
+                            }
+                        }
+
+                        // align to long works
+
+                        if (index & 2)
+                        	index += 2;
+
+                        hunks[h].relocentries = tot;
+                        printf("  %6d%s\n", tot, note);
+                        note = "";
+                        missing_relocs = 0;
+                    }
+                    break;
+				}
+
                 case HUNK_RELOC16:
                 case HUNK_RELOC8:
                 case HUNK_EXT:
                 case HUNK_HEADER:
                 case HUNK_OVERLAY:
                 case HUNK_BREAK:
-                case HUNK_DREL32:
                 case HUNK_DREL16:
                 case HUNK_DREL8:
                 case HUNK_LIB:
                 case HUNK_INDEX:
-                case HUNK_RELOC32SHORT:
                 case HUNK_RELRELOC32:
                 case HUNK_ABSRELOC16:
 				{
