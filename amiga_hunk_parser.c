@@ -1,22 +1,66 @@
-#include "endian.h"
+#include "amiga_hunk_parser.h"
 #include "doshunks.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-const char* hunktype[HUNK_ABSRELOC16 - HUNK_UNIT + 1] = {
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#if defined (__GLIBC__)
+#include <endian.h>
+#if (__BYTE_ORDER == __LITTLE_ENDIAN)
+	#define AHP_LITTLE_ENDIAN
+#elif (__BYTE_ORDER == __BIG_ENDIAN)
+	#define AHP_BIG_ENDIAN
+#elif (__BYTE_ORDER == __PDP_ENDIAN)
+	#define AHP_BIG_ENDIAN
+#else
+	#error "Unable to detect endian for your target."
+#endif
+	#define AHP_BYTE_ORDER __BYTE_ORDER
+#elif defined(_BIG_ENDIAN)
+	#define AHP_BIG_ENDIAN
+	#define AHP_BYTE_ORDER 4321
+#elif defined(_LITTLE_ENDIAN)
+	#define AHP_LITTLE_ENDIAN
+	#define AHP_BYTE_ORDER 1234
+#elif defined(__sparc) || defined(__sparc__) \
+   || defined(_POWER) || defined(__powerpc__) \
+   || defined(__ppc__) || defined(__hpux) \
+   || defined(_MIPSEB) || defined(_POWER) \
+   || defined(__s390__)
+	#define AHP_BIG_ENDIAN
+	#define AHP_BYTE_ORDER 4321
+#elif defined(__i386__) || defined(__alpha__) \
+   || defined(__ia64) || defined(__ia64__) \
+   || defined(_M_IX86) || defined(_M_IA64) \
+   || defined(_M_ALPHA) || defined(__amd64) \
+   || defined(__amd64__) || defined(_M_AMD64) \
+   || defined(__x86_64) || defined(__x86_64__) \
+   || defined(_M_X64)
+	#define AHP_LITTLE_ENDIAN
+	#define AHP_BYTE_ORDER 1234
+#else
+	#error "Unable to detect endian for your target."
+#endif
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const char* hunktype[HUNK_ABSRELOC16 - HUNK_UNIT + 1] = 
+{
     "UNIT", "NAME", "CODE", "DATA", "BSS ", "RELOC32", "RELOC16", "RELOC8",
     "EXT", "SYMBOL", "DEBUG", "END", "HEADER", "", "OVERLAY", "BREAK",
     "DREL32", "DREL16", "DREL8", "LIB", "INDEX",
     "RELOC32SHORT", "RELRELOC32", "ABSRELOC16"
 };
 
-#define HUNKF_MASK (HUNKF_FAST | HUNKF_CHIP)
-#define NUM_RELOC_CONTEXTS 256
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #define HUNK_DEBUG_LINE 0x4C494E45
 
-
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*
 typedef struct SymbolInfo
 {
 	const char* name;
@@ -32,8 +76,10 @@ typedef struct LineInfo
 	int* lines;
 	struct LineInfo* next;
 } LineInfo;
+*/
 
-typedef struct HunkInfo
+/*
+typedef struct AHPSection
 {
     uint32_t type;        // HUNK_<type>
     uint32_t flags;       // HUNKF_<flag>
@@ -51,7 +97,8 @@ typedef struct HunkInfo
     LineInfo* debugLines;
     LineInfo* lastDebugInfo;
 
-} HunkInfo;
+} AHPSection;
+*/
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -161,7 +208,7 @@ void* alloc_zero(size_t size)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static void parseSymbols(HunkInfo* hunk, const void* data, int* currIndex)
+static void parseSymbols(AHPSection* section, const void* data, int* currIndex)
 {
 	int oldIndex, index, i = 0;
 	int symCount = 0;
@@ -179,8 +226,8 @@ static void parseSymbols(HunkInfo* hunk, const void* data, int* currIndex)
 		symlen = get_u32_inc(data, &index) * 4;
 	}
 
-	hunk->symbolCount = symCount;
-	hunk->symbols = xalloc(SymbolInfo, symCount);
+	section->symbolCount = symCount;
+	section->symbols = xalloc(AHPSymbolInfo, symCount);
 
 	index = oldIndex;
 
@@ -188,23 +235,22 @@ static void parseSymbols(HunkInfo* hunk, const void* data, int* currIndex)
 
 	while (symlen > 0)
 	{
-		SymbolInfo* info = &hunk->symbols[i++];
+		AHPSymbolInfo* info = &section->symbols[i++];
 		info->name = ((const char*)data) + index;
 		index += symlen;
 		info->address = get_u32_inc(data, &index) * 4;
 		symlen = get_u32_inc(data, &index) * 4;
 	}
 
-	// symbols for hunk
-	
 	*currIndex = index;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static void parseDebug(HunkInfo* hunk, const void* data, int* currIndex)
+static void parseDebug(AHPSection* section, const void* data, int* currIndex)
 {
 	int index = *currIndex;
+	AHPLineInfo* lineInfo = 0;
 
 	const uint32_t hunkLength = get_u32_inc(data, &index) * 4;
 	const uint32_t baseOffset = get_u32_inc(data, &index) * 4;
@@ -216,7 +262,20 @@ static void parseDebug(HunkInfo* hunk, const void* data, int* currIndex)
 		return;
 	}
 
-	LineInfo* lineInfo = xalloc_zero(LineInfo, 1);
+	if (!section->debugLines)
+	{
+		lineInfo = xalloc_zero(AHPLineInfo, 1);
+		section->debugLines = lineInfo;
+		section->debugLineCount = 1;
+	}
+	else
+	{
+		// Kinda sucky impl but should do
+		int lineCount = section->debugLineCount++;
+		section->debugLines = realloc(section->debugLines, lineCount * 2 * sizeof(AHPLineInfo));
+		lineInfo = &section->debugLines[lineCount];
+		memset(lineInfo, 0, sizeof(AHPLineInfo));
+	}
 
 	const uint32_t stringLength = get_u32_inc(data, &index) * 4;
 
@@ -237,46 +296,39 @@ static void parseDebug(HunkInfo* hunk, const void* data, int* currIndex)
 		lineInfo->lines[i] = (int)get_u32_inc(data, &index); 
 		lineInfo->addresses[i] = (uint32_t)get_u32_inc(data, &index); 
 	}
-
-	if (!hunk->debugLines)
-		hunk->debugLines = lineInfo;
-
-	if (hunk->lastDebugInfo)
-		hunk->lastDebugInfo->next = lineInfo;
-
-	hunk->lastDebugInfo = lineInfo;
-
+	
 	*currIndex += hunkLength + 4;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static void parseCodeDataBss(HunkInfo* hunk, int type, const void* data, int* currIndex)
+static void parseCodeDataBss(AHPSection* section, int type, const void* data, int* currIndex)
 {
 	int index = *currIndex;
 
-	hunk->type = type;
-	hunk->datasize = get_u32_inc(data, &index) * 4;
+	switch (type)
+	{
+		case HUNK_CODE: section->type = AHPSectionType_Code; break;
+		case HUNK_DATA: section->type = AHPSectionType_Data; break;
+		case HUNK_BSS: section->type = AHPSectionType_Bss; break;
+	}
 
-	printf("%4s%10x %10x", hunktype[type - HUNK_UNIT], hunk->memsize, hunk->datasize);
+	section->type = type;
+	section->dataSize = get_u32_inc(data, &index) * 4;
 
 	if (type != HUNK_BSS)
 	{
-		hunk->datastart = index;
-		index += hunk->datasize;
+		section->dataStart = index;
+		index += section->dataSize;
 
-		if (hunk->datasize > 0)
+		if (section->dataSize > 0)
 		{
 			int sum = 0;
 
-			for (int pos = hunk->datastart; pos < hunk->datastart + hunk->datasize; pos += 4)
+			for (int pos = section->dataStart; pos < section->dataStart + section->dataSize; pos += 4)
 				sum += get_u32(data, pos);
 
-			printf("  %08x", sum);
-		}
-		else
-		{
-			printf("          ");
+			(void)sum;
 		}
 	}
 
@@ -285,11 +337,11 @@ static void parseCodeDataBss(HunkInfo* hunk, int type, const void* data, int* cu
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static void parseReloc32(HunkInfo* hunk, const void* data, int* currIndex)
+static void parseReloc32(AHPSection* section, const void* data, int* currIndex)
 {
 	int index = *currIndex;
 
-	hunk->relocstart = index;
+	section->relocStart = index;
 	int n, tot = 0;
 
 	while ((n = get_u32_inc(data, &index)) != 0)
@@ -301,7 +353,7 @@ static void parseReloc32(HunkInfo* hunk, const void* data, int* currIndex)
 
 		while (n--)
 		{
-			if ((get_u32_inc(data, &index)) > hunk->memsize - 4)
+			if ((get_u32_inc(data, &index)) > section->memSize - 4)
 			{
 				printf("\nError in reloc table!\n");
 				exit(1);
@@ -309,18 +361,18 @@ static void parseReloc32(HunkInfo* hunk, const void* data, int* currIndex)
 		}
 	}
 
-    hunk->relocentries = tot;
+    section->relocCount = tot;
 
 	*currIndex = index;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static void parseDreloc32(HunkInfo* hunk, const void* data, int* currIndex)
+static void parseDreloc32(AHPSection* section, const void* data, int* currIndex)
 {
 	int index = *currIndex;
 
-	hunk->relocstart = index;
+	section->relocStart = index;
 
 	int n, tot = 0;
 
@@ -335,7 +387,7 @@ static void parseDreloc32(HunkInfo* hunk, const void* data, int* currIndex)
 		{
 			uint16_t t = get_u16_inc(data, &index);
 
-			if (t > hunk->memsize - 4)
+			if (t > section->memSize - 4)
 			{
 				printf("\nError in reloc table!\n");
 				exit(1);
@@ -346,20 +398,17 @@ static void parseDreloc32(HunkInfo* hunk, const void* data, int* currIndex)
 	if (index & 2)
 		index += 2;
 
-	hunk->relocentries = tot;
+	section->relocCount = tot;
 
 	*currIndex = index;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static int parseHunk(HunkInfo* hunk, const void* data, int hunkId, int size, int* currIndex)
+static int parseSection(AHPSection* section, const void* data, int hunkId, int size, int* currIndex)
 {
 	int type;
 	int index = *currIndex;
-	const uint32_t flags = hunk->flags;
-
-	printf("%4d  %s", hunkId, flags == HUNKF_CHIP ? "CHIP" : flags == HUNKF_FAST ? "FAST" : "ANY ");
 
 	for (;;)
 	{
@@ -379,16 +428,16 @@ static int parseHunk(HunkInfo* hunk, const void* data, int hunkId, int size, int
 
 		switch (type)
 		{
-			case HUNK_DEBUG: parseDebug(hunk, data, &index); break;
-			case HUNK_SYMBOL: parseSymbols(hunk, data, &index); break;
+			case HUNK_DEBUG: parseDebug(section, data, &index); break;
+			case HUNK_SYMBOL: parseSymbols(section, data, &index); break;
 
 			case HUNK_CODE:
 			case HUNK_DATA:
-			case HUNK_BSS: parseCodeDataBss(hunk, type, data, &index); break;
-			case HUNK_RELOC32: parseReloc32(hunk, data, &index); break;
+			case HUNK_BSS: parseCodeDataBss(section, type, data, &index); break;
+			case HUNK_RELOC32: parseReloc32(section, data, &index); break;
 
 			case HUNK_DREL32:
-			case HUNK_RELOC32SHORT: parseDreloc32(hunk, data, &index); break;
+			case HUNK_RELOC32SHORT: parseDreloc32(section, data, &index); break;
 
 			case HUNK_UNIT:
 			case HUNK_NAME:
@@ -428,24 +477,28 @@ static int parseHunk(HunkInfo* hunk, const void* data, int hunkId, int size, int
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int aph_parse_file(const char* filename)
+AHPInfo* ahp_parse_file(const char* filename)
 {
     size_t size = 0;
     void* data = loadToMemory(filename, &size);
     uint32_t header = 0;
-    int index = 0;
-    HunkInfo* hunks = 0;
+    int h, index = 0;
+    int sectionCount = 0;
+    AHPSection* sections = 0;
 
     if (!data)
     {
         printf("Unable to open %s\n", filename);
-        return 1;
+        return 0;
     }
+
+    AHPInfo* info = xalloc_zero(AHPInfo, 1);
 
     if (get_u32_inc(data, &index) != HUNK_HEADER)
     {
         printf("HunkHeader is incorrect (should be 0x%08x but is 0x%08x)\n", HUNK_HEADER, header);
-        return 1;
+        ahp_free(info);
+        return 0;
     }
 
     while (get_u32_inc(data, &index))
@@ -454,50 +507,57 @@ int aph_parse_file(const char* filename)
         if (index >= size)
         {
             printf("Bad hunk header!\n");
-            return 1;
+        	ahp_free(info);
+            return 0;
         }
     }
 
-    int numhunks = get_u32_inc(data, &index);
-    if (numhunks == 0)
+    sectionCount = get_u32_inc(data, &index);
+
+    if (sectionCount == 0)
     {
-        printf("No hunks!\n");
-        return 1;
+        printf("No sections!\n");
+		ahp_free(info);
+        return 0;
     }
 
-    hunks = (HunkInfo*)malloc(numhunks * sizeof(HunkInfo));
-    memset(hunks, 0, numhunks * sizeof(HunkInfo));
+	info->sections = sections = xalloc_zero(AHPSection, sectionCount); 
 
-    if (get_u32_inc(data, &index) != 0 || get_u32_inc(data, &index) != numhunks - 1)
+    if (get_u32_inc(data, &index) != 0 || get_u32_inc(data, &index) != sectionCount - 1)
     {
         printf("Unsupported hunk load limits!\n");
-        return 1;
+        ahp_free(info);
+        return 0;
     }
 
-    // read hunk sizess
+    // read hunk sizes and target
 
-    for (int h = 0; h < numhunks; h++)
+    for (h = 0; h < sectionCount; ++h)
     {
-        hunks[h].memsize = (get_u32(data, index) & 0x0fffffff) * 4;
-        switch (hunks[h].flags = get_u32(data, index) & 0xf0000000)
-        {
-            case 0:
-            case HUNKF_CHIP:
-            case HUNKF_FAST:
-                break;
-            default:
-                printf("Illegal hunk flags!\n");
-                return 1;
-        }
+    	AHPSectionTarget target = AHPSectionTarget_Any;
+
+        sections[h].memSize = (get_u32(data, index) & 0x0fffffff) * 4;
+        uint32_t flags = get_u32(data, index) & 0xf0000000;
+
+        switch (flags)
+		{
+			case 0 : target = AHPSectionTarget_Any; break; 
+			case HUNKF_CHIP : target = AHPSectionTarget_Chip; break; 
+			case HUNKF_FAST : target = AHPSectionTarget_Fast; break; 
+		}
+
+		sections[h].target = target;
+
         index += 4;
     }
 
-    // Parse hunks
-    printf("Hunk  Mem  Type  Mem size  Data size  Data sum  Relocs\n");
-    for (int h = 0; h < numhunks; ++h)
+    for (h = 0; h < sectionCount; ++h)
     {
-    	if (!parseHunk(&hunks[h], data, h, size, &index)) 
+    	if (!parseSection(&sections[h], data, h, size, &index)) 
+		{
+			ahp_free(info);
     		return 0; 
+		}
     }
 
     if (index < size)
@@ -505,9 +565,15 @@ int aph_parse_file(const char* filename)
         printf("Warning: %d bytes of extra data at the end of the file!\n", (int)(size - index) * 4);
     }
 
-    printf("\n");
-
-    return 0;
+    return info;
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void ahp_free(AHPInfo* info)
+{
+	free(info->sections);
+	free(info->fileData);
+	free(info);
+}
 

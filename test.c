@@ -11,7 +11,7 @@ int main(int argc, const char** argv)
         return 0;
     }
 
-    aph_parse_file(argv[1]);
+    ahp_parse_file(argv[1]);
 
     return 0;
 }
