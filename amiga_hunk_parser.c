@@ -296,6 +296,8 @@ static void parseDebug(AHPSection* section, const void* data, int* currIndex)
 		lineInfo->lines[i] = (int)get_u32_inc(data, &index); 
 		lineInfo->addresses[i] = (uint32_t)get_u32_inc(data, &index); 
 	}
+
+	lineInfo->count = lineCount;
 	
 	*currIndex += hunkLength + 4;
 }
@@ -313,7 +315,6 @@ static void parseCodeDataBss(AHPSection* section, int type, const void* data, in
 		case HUNK_BSS: section->type = AHPSectionType_Bss; break;
 	}
 
-	section->type = type;
 	section->dataSize = get_u32_inc(data, &index) * 4;
 
 	if (type != HUNK_BSS)
@@ -461,7 +462,7 @@ static int parseSection(AHPSection* section, const void* data, int hunkId, int s
 			case HUNK_END: 
 			{
 				*currIndex = index;
-				printf("\n"); return 1; 
+				return 1; 
 			}
 
 			default:
@@ -522,6 +523,7 @@ AHPInfo* ahp_parse_file(const char* filename)
     }
 
 	info->sections = sections = xalloc_zero(AHPSection, sectionCount); 
+	info->sectionCount = sectionCount;
 
     if (get_u32_inc(data, &index) != 0 || get_u32_inc(data, &index) != sectionCount - 1)
     {
@@ -566,6 +568,89 @@ AHPInfo* ahp_parse_file(const char* filename)
     }
 
     return info;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static const char* getTypeName(AHPSectionType type)
+{
+	switch (type)
+	{
+		case AHPSectionType_Code : return "CODE";
+		case AHPSectionType_Data : return "DATA";
+		case AHPSectionType_Bss : return "BSS ";
+	}
+
+	return "UNKN";
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static const char* getTargetName(AHPSectionTarget target)
+{
+	switch (target)
+	{
+		case AHPSectionTarget_Any : return "ANY ";
+		case AHPSectionTarget_Fast : return "FAST";
+		case AHPSectionTarget_Chip : return "CHIP";
+	}
+
+	return "UNKN";
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void ahp_print_info(AHPInfo* info, int verbose)
+{	
+	int dli, syi, si, i;
+
+	printf("Sec Type  Target  memSize    relocCount  symCount   debugLineCount\n");
+
+	for (i = 0; i < info->sectionCount; ++i)
+	{
+		AHPSection* section = &info->sections[i];
+
+	    //printf("Section Type Target memSize relocCount symCount debugLineCount\n");
+		printf("%02d  %s  %s   %8d      %8d  %8d   %8d\n", i, 
+				getTypeName(section->type), 
+				getTargetName(section->target), 
+				section->memSize,
+				section->relocCount,
+				section->symbolCount,
+				section->debugLineCount);
+	}
+
+	if (!verbose)
+		return;
+
+	for (si = 0; si < info->sectionCount; ++si)
+	{
+		AHPSection* section = &info->sections[si];
+
+		printf("Section %d ------------------------------------------------------\n", si);
+
+		if (section->symbolCount > 0)
+			printf("  Symbols ------------------------------------------------------\n");
+
+		for (syi = 0; syi < section->symbolCount; ++syi)
+		{
+    		AHPSymbolInfo* symbol = &section->symbols[syi];
+    		printf("  %08x - %s\n", symbol->address, symbol->name);
+		}
+
+		if (section->debugLineCount > 0)
+			printf("  DebugLineCount -----------------------------------------\n");
+
+		for (dli = 0; dli < section->debugLineCount; ++dli)
+		{
+    		AHPLineInfo* debugLines = &section->debugLines[dli];
+
+    		printf("  File %s\n", debugLines->filename);
+
+    		for (i = 0; i < debugLines->count; ++i)
+    			printf("    %08x - %d\n", debugLines->addresses[i], debugLines->lines[i]);
+		}
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

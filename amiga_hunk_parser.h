@@ -82,6 +82,7 @@ typedef struct AHPInfo
 
 AHPInfo* ahp_parse_file(const char* filename);
 
+void ahp_print_info(AHPInfo* info, int verbose);
 void ahp_free(AHPInfo* info);
 
 #endif
