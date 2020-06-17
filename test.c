@@ -9,7 +9,7 @@ int main(int argc, const char** argv)
 
     if (argc < 2)
     {
-        printf("Usage <tool> <amiga executable>\n");
+        printf("Usage: %s <amiga executable>\n\n", argv[0]);
         return 0;
     }
 
