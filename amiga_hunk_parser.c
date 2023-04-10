@@ -7,6 +7,16 @@
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#if defined (__AROS__)
+    #include <aros/cpu.h>
+    #if AROS_BIG_ENDIAN
+        #define AHP_BIG_ENDIAN
+        #define AHP_BYTE_ORDER 4321
+    #else
+        #define AHP_LITTLE_ENDIAN
+        #define AHP_BYTE_ORDER 1234
+    #endif
+#else
 #if defined (__GLIBC__)
 #include <endian.h>
 #if (__BYTE_ORDER == __LITTLE_ENDIAN)
@@ -43,6 +53,7 @@
 	#define AHP_BYTE_ORDER 1234
 #else
 	#error "Unable to detect endian for your target."
+#endif
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
