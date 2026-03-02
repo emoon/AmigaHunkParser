@@ -269,7 +269,7 @@ static void parseDebug(AHPSection* section, const void* data, int* currIndex)
 
 	if (debugId != HUNK_DEBUG_LINE)
 	{
-		*currIndex += hunkLength;
+		*currIndex += hunkLength + 4;
 		return;
 	}
 
@@ -505,8 +505,10 @@ AHPInfo* ahp_parse_file(const char* filename)
     }
 
     AHPInfo* info = xalloc_zero(AHPInfo, 1);
+    info->fileData = data;
 
-    if (get_u32_inc(data, &index) != HUNK_HEADER)
+    header = get_u32_inc(data, &index);
+    if (header != HUNK_HEADER)
     {
         printf("HunkHeader is incorrect (should be 0x%08x but is 0x%08x)\n", HUNK_HEADER, header);
         ahp_free(info);
@@ -575,7 +577,7 @@ AHPInfo* ahp_parse_file(const char* filename)
 
     if (index < size)
     {
-        printf("Warning: %d bytes of extra data at the end of the file!\n", (int)(size - index) * 4);
+        printf("Warning: %d bytes of extra data at the end of the file!\n", (int)(size - index));
     }
 
     return info;
@@ -668,6 +670,17 @@ void ahp_print_info(AHPInfo* info, int verbose)
 
 void ahp_free(AHPInfo* info)
 {
+	for (int i = 0; i < info->sectionCount; ++i)
+	{
+		AHPSection* section = &info->sections[i];
+		free(section->symbols);
+		for (int d = 0; d < section->debugLineCount; ++d)
+		{
+			free(section->debugLines[d].addresses);
+			free(section->debugLines[d].lines);
+		}
+		free(section->debugLines);
+	}
 	free(info->sections);
 	free(info->fileData);
 	free(info);
